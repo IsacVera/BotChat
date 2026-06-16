@@ -1,0 +1,456 @@
+High-Level Architecture
+
+Ingestion (PDF → context)
+
+Users upload one or more PDFs per company (tenant).
+
+Backend extracts text, cleans it, chunks it, embeds it, and stores both chunks and embeddings in Postgres (pgvector).
+
+Each chunk is versioned and attributed to its source PDF + page(s).
+
+Runtime (Ask → Classify → Answer)
+
+Vue submits a user question to /chat/ask.
+
+Guardrail: if the company has no indexed PDF context, respond 400 with: “Please upload a PDF before asking the chatbot any questions.”
+
+The backend fetches top-K chunks for the question (vector + keyword hybrid).
+
+Call 1 (Classifier): Gemini 2.5 Flash with your Policy-Gate prompt returns { related, reason, sanitized_query, policy_tags }.
+
+If related=false → return structured decline to the UI.
+
+If related=true → Call 2 (Answerer) with the sanitized query + top-K chunks → respond with the final JSON answer (or one follow-up question).
+
+Observability & Safety
+
+Full request/response logging with redaction of secrets.
+
+Feature flags for “strict JSON” enforcement and fallbacks.
+
+Rate limiting, per-tenant quotas, and audit trails.
+
+Tech Choices
+
+Django 5 + Django REST Framework
+
+Postgres 16 with pgvector for embeddings (vector(768) or as required by the model you choose)
+
+Celery + Redis for async ingestion (PDF → chunks → embeddings)
+
+pypdf or pdfminer.six for extraction; unstructured (optional) if you need table/list handling
+
+Gemini 2.5 Flash (classify + answer) and Gemini embedding model for vectors
+
+django-tenants or company_id scoping (pick one; plan below assumes simple company_id scoping)
+
+whitenoise (static), gunicorn/uvicorn (ASGI if streaming later)
+
+Data Model (Django models)
+# apps/core/models.py
+from django.db import models
+from django.contrib.postgres.indexes import GinIndex
+
+class Company(models.Model):
+    name = models.CharField(max_length=200, unique=True)
+    # optional: domain, owner, plan, etc.
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class Document(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='documents')
+    filename = models.CharField(max_length=255)
+    storage_path = models.CharField(max_length=500)   # where you saved the PDF (S3 or local)
+    page_count = models.IntegerField(default=0)
+    status = models.CharField(max_length=30, default='uploaded')  # uploaded|processing|ready|error
+    error_message = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class Chunk(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='chunks')
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='chunks')
+    page_from = models.IntegerField()
+    page_to = models.IntegerField()
+    text = models.TextField()
+    embedding = models.BinaryField(null=True)  # use pgvector via a migration (see below)
+    version = models.IntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            GinIndex(fields=['text'], name='idx_chunk_text_gin', opclasses=['gin_trgm_ops']),
+        ]
+
+class ChatSession(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE)
+    user_id = models.CharField(max_length=128, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class ChatTurn(models.Model):
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE, related_name='turns')
+    user_question = models.TextField()
+    sanitized_query = models.TextField(blank=True, default='')
+    related = models.BooleanField(null=True)
+    policy_tags = models.JSONField(default=list)
+    reason = models.CharField(max_length=300, blank=True, default='')
+
+    answer_json = models.JSONField(null=True)  # stores Answerer response schema
+    topk_chunks = models.JSONField(default=list)  # store ids + scores for auditing
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+Note: We’ll switch embedding to a pgvector column via a migration.
+
+Postgres Setup (pgvector + trigram)
+
+Migration SQL (run once):
+
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Change embedding to vector type (example: 768 dims)
+ALTER TABLE core_chunk
+  ADD COLUMN embedding_vec vector(768);
+
+-- Backfill: copy from BinaryField if needed, or write directly to embedding_vec in pipeline
+-- Indexes (vector and trigram)
+CREATE INDEX IF NOT EXISTS idx_chunk_embedding
+  ON core_chunk USING ivfflat (embedding_vec vector_l2_ops) WITH (lists = 100);
+
+-- Trigram index was added via Django's GinIndex; ensure pg_trgm is enabled.
+
+
+In Django, you can keep embedding_vec out of the ORM for now and write to it with raw SQL, or use a custom field (e.g., pgvector.django.VectorField if you add that dependency).
+
+API Surface (DRF)
+1) Upload & Ingest
+
+POST /docs/upload (multipart)
+
+Auth: required
+
+Body: { file: PDF }
+
+Returns: { document_id, status: "uploaded" }
+
+Side effects: saves file, creates Document, enqueues Celery task ingest_document(document_id).
+
+GET /docs → list documents for company
+
+GET /docs/{id} → details + status
+
+2) Chat (single entrypoint used by the UI)
+
+POST /chat/ask
+
+Auth: required
+
+Body:
+
+{
+  "company_id": "uuid-or-int",
+  "user_id": "optional",
+  "question": "string",
+  "session_id": "optional"
+}
+
+
+Behavior:
+
+Guardrail: If company has 0 chunks in status=ready docs → 400 with { "error": "Please upload a PDF before asking the chatbot any questions." }
+
+Retrieve top-K chunks (hybrid retrieval).
+
+Call 1 (Classifier) with Policy-Gate prompt + snippets.
+
+If related=false → return:
+
+{
+  "related": false,
+  "reason": "...",
+  "sanitized_query": "...",
+  "policy_tags": []
+}
+
+
+If related=true → Call 2 (Answerer) → return Answerer JSON (answer/follow_up_question/citations) alongside classifier object and echo the top-K chunk citations for transparency.
+
+Response (success):
+
+{
+  "classifier": {
+    "related": true,
+    "reason": "...",
+    "sanitized_query": "...",
+    "policy_tags": ["hours"]
+  },
+  "answer": {
+    "answer": "Yes—stores are closed on Christmas Day.",
+    "follow_up_question": "",
+    "citations": [
+      {"title":"Store Hours & Holidays","snippet":"Closed: Christmas Day.","locator":"Policies.pdf p.4"}
+    ]
+  },
+  "debug": {
+    "topk": [{"chunk_id": 123, "score": 0.88, "page_from": 4, "page_to": 4}]
+  }
+}
+
+Retrieval Strategy (Hybrid)
+
+Vector search (top 20) using embedding_vec <-> question_embedding.
+
+Keyword rerank (trigram / BM25): score the same chunks by text similarity to question.
+
+Final K: Take top 6 after a simple weighted sum or rank-fusion.
+
+Fallback: if embeddings aren’t ready, use trigram only.
+
+Celery Pipeline (Ingestion)
+
+Task: ingest_document(document_id)
+
+Steps:
+
+Load PDF from storage.
+
+Extract text per page (pypdf).
+
+Normalize whitespace, keep basic structure markers (headings, lists) if possible.
+
+Chunking:
+
+Aim for 500–1000 tokens per chunk with 50–100 token overlap.
+
+Keep page boundaries and record page_from/page_to.
+
+Embeddings:
+
+Call Gemini embedding model (batch).
+
+Write vectors to embedding_vec with parameterized SQL.
+
+Mark Document.status = 'ready'.
+
+Gemini Calls
+Classifier (Call 1)
+
+Endpoint: v1/models/gemini-2.5-flash:generateContent
+
+Prompt: your refined Policy-Gate (JSON-only).
+
+Inputs:
+
+company_name
+
+context_snippets: top 6 chunks’ short excerpts (trim to ~500 tokens total)
+
+user_question
+
+Best-practice config:
+
+temperature: 0
+
+(If using v1beta): response_mime_type: "application/json" to increase JSON compliance.
+
+Answerer (Call 2)
+
+Same model
+
+Prompt: your Answerer prompt (JSON schema with answer, follow_up_question, citations).
+
+Inputs:
+
+company_name
+
+user_question: sanitized_query
+
+policy_tags
+
+context_snippets: the same top-K chunks but allow more content (~1–1.5k tokens) for accuracy
+
+Rules: strictly grounded; one clarification max; cite chunk title/page.
+
+Settings & Secrets
+
+.env (12-factor):
+
+DJANGO_SECRET_KEY=...
+DATABASE_URL=postgres://...
+REDIS_URL=redis://...
+GEMINI_API_KEY=...
+EMBEDDING_DIM=768
+TOPK=6
+
+
+settings.py:
+
+DRF installed, CORS for your Vue origin.
+
+CELERY broker/result backend.
+
+File storage (local or S3 via django-storages).
+
+Key Django Views (Pseudo-code)
+# apps/chat/views.py
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import status
+from django.db import connection
+
+from .selectors import has_indexed_content, topk_chunks_for_question
+from .llm import classify_question, answer_question
+from .serializers import AskSerializer
+
+@api_view(['POST'])
+def ask(request):
+    s = AskSerializer(data=request.data)
+    s.is_valid(raise_exception=True)
+    company_id = s.validated_data['company_id']
+    question = s.validated_data['question']
+    user_id = s.validated_data.get('user_id')
+
+    if not has_indexed_content(company_id):
+        return Response({"error": "Please upload a PDF before asking the chatbot any questions."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    topk = topk_chunks_for_question(company_id, question)  # returns [{id, text, page_from, page_to, score, title}]
+    snippets = [c['text'][:800] for c in topk]  # keep short; you’ll trim properly
+
+    classifier = classify_question(
+        company_name=_company_name(company_id),
+        context_snippets=snippets,
+        user_question=question
+    )
+    # Persist the classification & topk for audit
+    turn = _save_turn(company_id, user_id, question, classifier, topk)
+
+    if not classifier['related']:
+        return Response({"classifier": classifier, "answer": None, "debug": {"topk": _public_topk(topk)}}, status=200)
+
+    answer = answer_question(
+        company_name=_company_name(company_id),
+        sanitized_query=classifier['sanitized_query'],
+        policy_tags=classifier.get('policy_tags', []),
+        context_snippets=snippets
+    )
+    _save_answer(turn, answer)
+
+    return Response({
+        "classifier": classifier,
+        "answer": answer,
+        "debug": {"topk": _public_topk(topk)}
+    }, status=200)
+
+Selectors: Retrieval
+# apps/chat/selectors.py
+from django.db import connection
+
+def has_indexed_content(company_id: int) -> bool:
+    with connection.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS(
+              SELECT 1 FROM core_document d
+              JOIN core_chunk c ON c.document_id = d.id
+              WHERE d.company_id = %s AND d.status = 'ready'
+            );
+        """, [company_id])
+        return cur.fetchone()[0]
+
+def topk_chunks_for_question(company_id: int, question: str, k: int = 6):
+    # 1) get question embedding via Gemini
+    q_vec = embed(question)  # returns python list[float] or vector literal
+
+    with connection.cursor() as cur:
+        cur.execute("""
+          WITH vec_candidates AS (
+            SELECT id, text, page_from, page_to,
+                   1 - (embedding_vec <=> %s::vector) AS vscore
+            FROM core_chunk
+            WHERE company_id = %s
+            ORDER BY embedding_vec <-> %s::vector
+            LIMIT 20
+          ),
+          kw AS (
+            SELECT id, similarity(text, %s) AS kscore
+            FROM core_chunk
+            WHERE company_id = %s
+            ORDER BY text <-> %s
+            LIMIT 50
+          )
+          SELECT c.id, c.text, c.page_from, c.page_to,
+                 (coalesce(v.vscore,0)*0.6 + coalesce(k.kscore,0)*0.4) AS score
+          FROM core_chunk c
+          LEFT JOIN vec_candidates v ON v.id=c.id
+          LEFT JOIN kw k ON k.id=c.id
+          WHERE c.company_id = %s
+          ORDER BY score DESC
+          LIMIT %s
+        """, [q_vec, company_id, q_vec, question, company_id, question, company_id, k])
+        rows = cur.fetchall()
+    # map to dicts; add title/locator if you store it
+    return [{"id": r[0], "text": r[1], "page_from": r[2], "page_to": r[3], "score": float(r[4])} for r in rows]
+
+LLM Client (Gemini)
+# apps/chat/llm.py
+import requests
+import os
+
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+BASE = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
+
+def _call_gemini(prompt_text: str):
+    r = requests.post(
+        f"{BASE}?key={GEMINI_KEY}",
+        json={"contents": [{"parts": [{"text": prompt_text}]}]},
+        timeout=30
+    )
+    r.raise_for_status()
+    data = r.json()
+    # pull out the first text candidate
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+def classify_question(company_name, context_snippets, user_question):
+    prompt = build_classifier_prompt(company_name, context_snippets, user_question)
+    text = _call_gemini(prompt)
+    return json_strict_loads(text)  # your helper that rejects non-JSON
+
+def answer_question(company_name, sanitized_query, policy_tags, context_snippets):
+    prompt = build_answerer_prompt(company_name, sanitized_query, policy_tags, context_snippets)
+    text = _call_gemini(prompt)
+    return json_strict_loads(text)
+
+def embed(text: str):
+    # Call Gemini Embeddings endpoint; return pgvector literal like `'[0.1, 0.2, ...]'`
+    # Or return python list and adapt SQL above.
+    ...
+
+
+Add a json_strict_loads helper that strips code fences, validates schema, and raises if invalid.
+
+Prompts (drop-in)
+
+Classifier: the refined Policy-Gate you and I wrote (JSON-only).
+
+Answerer: the JSON-only schema with answer, follow_up_question, citations, and rules (grounded, one clarification max, cite locator).
+
+Keep both in apps/chat/prompts.py.
+
+Error Handling & Guardrails
+
+No PDFs indexed: 400 + "Please upload a PDF before asking the chatbot any questions."
+
+Gemini errors: 502 with a generic message; log details server-side.
+
+JSON non-compliance: retry once with a “REMINDER: Return STRICT JSON per schema.” prefix.
+
+Context empty for related topic: Answerer should respond with “Not in context” + contact citation (from your docs), per prompt rules.
+
+Auth, Quotas, and Rate Limits
+
+JWT or session auth (DRF SimpleJWT works well).
+
+Per-company daily quota (simple counter table).
+
+IP/user rate limiting (django-ratelimit) on /chat/ask.
+
+Log request sizes and chunk counts.

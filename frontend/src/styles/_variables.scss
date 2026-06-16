@@ -1,0 +1,54 @@
+// Color Palette - Light Mode
+$color-bg-primary: #f8fafc;
+$color-bg-secondary: #ffffff;
+$color-bg-tertiary: #f1f5f9;
+$color-bg-hover: #e2e8f0;
+
+$color-border-default: #cbd5e1;
+$color-border-focus: #0069A4;
+
+$color-text-primary: #1e293b;
+$color-text-secondary: #64748b;
+$color-text-muted: #94a3b8;
+
+$color-brand-primary: #0069A4;
+$color-brand-hover: #005082;
+$color-brand-secondary: #FF731C;
+$color-brand-secondary-hover: #e65a00;
+
+$color-error-bg: #fef2f2;
+$color-error-border: #fecaca;
+$color-error-text: #dc2626;
+
+$color-success-bg: #f0fdf4;
+$color-success-border: #bbf7d0;
+$color-success-text: #16a34a;
+
+// Typography
+$font-size-base: 15px;
+$font-size-sm: 14px;
+$font-size-lg: 16px;
+$font-size-xl: 32px;
+
+$font-weight-normal: 400;
+$font-weight-medium: 500;
+$font-weight-semibold: 600;
+
+// Spacing
+$spacing-xs: 8px;
+$spacing-sm: 12px;
+$spacing-md: 16px;
+$spacing-lg: 20px;
+$spacing-xl: 24px;
+$spacing-2xl: 32px;
+$spacing-3xl: 48px;
+
+// Border Radius
+$radius-sm: 8px;
+$radius-md: 12px;
+
+// Shadows
+$shadow-default: 0 4px 6px rgba(0, 0, 0, 0.3);
+
+// Transitions
+$transition-default: all 0.2s ease;
