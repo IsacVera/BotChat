@@ -102,7 +102,7 @@ def build_answer_prompt(company_name: str, sanitized_query: str, policy_tags: Li
         "1. Answer ONLY using information from the context snippets below\n"
         "2. Be specific and accurate - quote relevant parts when helpful\n"
         "3. If the context doesn't contain enough information, say 'I don't have enough information in the provided context to answer that'\n"
-        "4. Cite which snippet(s) you used by referring to [Snippet N]\n"
+        "4. Do NOT mention snippet labels such as [Snippet 1] in the answer text shown to the user\n"
         "5. Return your response as STRICT JSON (no markdown, no code blocks) with these exact keys:\n"
         "   - answer: string (your complete answer)\n"
         "   - follow_up_question: string (optional related question user might ask)\n"

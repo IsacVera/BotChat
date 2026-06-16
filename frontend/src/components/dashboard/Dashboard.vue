@@ -63,13 +63,9 @@
 
       <div v-if="askError" class="error error-box">{{ askError }}</div>
 
-      <div v-if="classifier || answer" class="result">
-        <h3>Classifier</h3>
-        <pre>{{ classifier }}</pre>
+      <div v-if="answer" class="result">
         <h3>Answer</h3>
         <pre>{{ answer }}</pre>
-        <h3>Top-K (debug)</h3>
-        <pre>{{ debugTopk }}</pre>
       </div>
     </div>
   </div>
@@ -89,9 +85,7 @@ const success = ref(false);
 
 const question = ref('');
 const asking = ref(false);
-const classifier = ref<any>(null);
-const answer = ref<any>(null);
-const debugTopk = ref<any>(null);
+const answer = ref('');
 const askError = ref('');
 
 const uploadedDocId = ref<number | null>(null);
@@ -168,9 +162,7 @@ function startStatusPolling() {
 
 async function onAsk() {
   askError.value = '';
-  classifier.value = null;
-  answer.value = null;
-  debugTopk.value = null;
+  answer.value = '';
   if (!question.value) return;
   try {
     asking.value = true;
@@ -178,9 +170,13 @@ async function onAsk() {
       company_id: companyId,
       question: question.value
     });
-    classifier.value = JSON.stringify(res.data.classifier, null, 2);
-    answer.value = JSON.stringify(res.data.answer, null, 2);
-    debugTopk.value = JSON.stringify(res.data.debug?.topk || [], null, 2);
+    if (!res.data.answer) {
+      answer.value = 'Your question is not related to the terms of service.';
+      return;
+    }
+
+    answer.value = (res.data.answer.answer || 'I do not have a response right now.')
+      .replace(/\s*\[Snippet\s+\d+\]/g, '');
   } catch (err: any) {
     console.error(err);
     askError.value = err.response?.data?.error || 'Chat request failed';
@@ -253,7 +249,14 @@ button {
 
 .divider { margin: 32px 0; }
 
-.result pre { background: #f7f7f7; padding: 12px; overflow: auto; }
+.result pre {
+  background: #f7f7f7;
+  padding: 12px;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 .doc-status {
   margin: 20px 0;
