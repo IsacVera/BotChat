@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 import requests
 
 GEMINI_GEN_BASE = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
-GEMINI_EMBED_BATCH = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents"
+GEMINI_EMBED_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 
 
 def _get_api_key() -> str:
@@ -127,27 +127,24 @@ def answer_question(company_name: str, sanitized_query: str, policy_tags: List[s
 def embed_texts(texts: List[str]) -> List[List[float]]:
     """Return list of embedding vectors for input texts using Gemini Embeddings."""
     key = _get_api_key()
-    url = f"{GEMINI_EMBED_BATCH}?key={key}"
-    # Each request must include the model field
-    requests_body = [
-        {
-            "model": "models/text-embedding-004",
-            "content": {"parts": [{"text": t[:8000]}]}
-        } 
-        for t in texts
-    ]
-    payload = {
-        "model": "models/text-embedding-004",
-        "requests": requests_body
-    }
-    resp = requests.post(url, json=payload, timeout=30)
-    if resp.status_code >= 400:
-        resp.raise_for_status()
-    data = resp.json()
-    try:
-        embeds = data["embeddings"]
-        return [e.get("values") or e.get("embedding", {}).get("values", []) for e in embeds]
-    except Exception:
-        # Fallback: return zero vectors if unavailable
-        dim = int(os.getenv("EMBEDDING_DIM", "768"))
-        return [[0.0] * dim for _ in texts]
+    url = f"{GEMINI_EMBED_BASE}?key={key}"
+    embeddings: List[List[float]] = []
+
+    for text in texts:
+        payload = {
+            "model": "models/gemini-embedding-001",
+            "content": {"parts": [{"text": text[:8000]}]},
+            "taskType": "RETRIEVAL_DOCUMENT",
+            "outputDimensionality": int(os.getenv("EMBEDDING_DIM", "768")),
+        }
+        resp = requests.post(url, json=payload, timeout=30)
+        if resp.status_code >= 400:
+            resp.raise_for_status()
+
+        data = resp.json()
+        embedding = data.get("embedding", {}).get("values", [])
+        if not embedding:
+            raise RuntimeError("Unexpected Gemini embedding response schema")
+        embeddings.append(embedding)
+
+    return embeddings

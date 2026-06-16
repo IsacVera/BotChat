@@ -1,20 +1,13 @@
 <template>
   <div class="container">
     <h1>My heart</h1>
-<a target="_blank" href="https://icons8.comundefined">Settings</a> icon by <a target="_blank" href="https://icons8.com">Icons8</a>
     <div class="form">
       <p class="fixed-company">Using company 1</p>
-      <p class="fixed-company">Place exactly one PDF in {{ sourceDir }}</p>
 
       <p v-if="loading" class="uploading">⏳ Importing the server-side PDF...</p>
     </div>
 
-    <p v-if="message" :class="{ success: success, error: !success }">{{ message }}</p>
-
-    <div class="help">
-      <p>Backend endpoint: {{ apiBase }}/docs/load-default</p>
-      <p>The app automatically imports the single PDF from that folder.</p>
-    </div>
+    <p v-if="message && !success" class="error">{{ message }}</p>
 
     <div v-if="docStatus" class="doc-status">
       <div class="status-info">
@@ -32,7 +25,7 @@
         <div class="help-text">
           <span v-if="docStatus.status === 'uploaded'">⏳ Waiting for processing...</span>
           <span v-if="docStatus.status === 'processing'">⚙️ Processing document...</span>
-          <span v-if="docStatus.status === 'ready'">✅ Ready! You can now ask questions below.</span>
+          <span v-if="docStatus.status === 'ready'">✅ You can now ask questions below.</span>
           <span v-if="docStatus.status === 'error'">❌ Processing failed. Please try uploading again.</span>
         </div>
       </div>
@@ -77,7 +70,6 @@ import axios from 'axios';
 
 const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
 const companyId = 1;
-const sourceDir = 'backend/media/source';
 
 const loading = ref(false);
 const message = ref('');
@@ -108,7 +100,7 @@ async function loadConfiguredPdf() {
     });
 
     success.value = true;
-    message.value = `Loaded ${res.data.filename} from the server folder.`;
+    message.value = '';
     uploadedDocId.value = res.data.document_id;
     startStatusPolling();
   } catch (err: any) {
