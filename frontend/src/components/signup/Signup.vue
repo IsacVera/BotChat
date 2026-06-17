@@ -83,9 +83,9 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
+import { apiBase } from '@/lib/apiBase';
 
 const router = useRouter();
-const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
 
 const formData = ref({
   username: '',

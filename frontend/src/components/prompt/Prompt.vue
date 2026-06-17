@@ -82,8 +82,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import axios from 'axios';
-
-const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
+import { apiBase } from '@/lib/apiBase';
 
 const companyId = ref<number>(1);
 const file = ref<File | null>(null);

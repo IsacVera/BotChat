@@ -94,8 +94,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import axios from 'axios';
+import { apiBase } from '@/lib/apiBase';
 
-const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
 const companyId = 1;
 
 const loading = ref(false);

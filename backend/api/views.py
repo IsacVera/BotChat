@@ -41,23 +41,34 @@ def _reset_company_documents(company_id: int) -> None:
 
 
 def _fixed_pdf_source_dir() -> str:
-    return os.getenv('DEFAULT_PDF_DIR', os.path.join(settings.MEDIA_ROOT, 'source'))
+    configured_path = os.getenv('DEFAULT_PDF_DIR')
+    if not configured_path:
+        return os.path.join(settings.MEDIA_ROOT, 'source')
+    if os.path.isabs(configured_path):
+        return configured_path
+    return os.path.abspath(os.path.join(settings.BASE_DIR, configured_path))
 
 
 def _get_fixed_pdf_source() -> str:
-    source_dir = _fixed_pdf_source_dir()
-    if not os.path.isdir(source_dir):
-        raise FileNotFoundError(f'Configured PDF folder does not exist: {source_dir}')
+    source_path = _fixed_pdf_source_dir()
+
+    if os.path.isfile(source_path):
+        if not source_path.lower().endswith('.pdf'):
+            raise FileNotFoundError(f'Configured PDF file is not a PDF: {source_path}')
+        return source_path
+
+    if not os.path.isdir(source_path):
+        raise FileNotFoundError(f'Configured PDF folder does not exist: {source_path}')
 
     pdf_files = sorted(
-        name for name in os.listdir(source_dir)
-        if os.path.isfile(os.path.join(source_dir, name)) and name.lower().endswith('.pdf')
+        name for name in os.listdir(source_path)
+        if os.path.isfile(os.path.join(source_path, name)) and name.lower().endswith('.pdf')
     )
     if not pdf_files:
-        raise FileNotFoundError(f'No PDF found in configured folder: {source_dir}')
+        raise FileNotFoundError(f'No PDF found in configured folder: {source_path}')
     if len(pdf_files) > 1:
-        raise FileExistsError(f'Expected exactly one PDF in {source_dir}, found {len(pdf_files)}')
-    return os.path.join(source_dir, pdf_files[0])
+        raise FileExistsError(f'Expected exactly one PDF in {source_path}, found {len(pdf_files)}')
+    return os.path.join(source_path, pdf_files[0])
 
 
 def _ensure_company(company_id: int) -> Company:
