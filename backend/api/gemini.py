@@ -9,6 +9,76 @@ GEMINI_GEN_BASE = "https://generativelanguage.googleapis.com/v1/models/gemini-2.
 GEMINI_EMBED_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 
 
+class GeminiServiceError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 502):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _quota_violations(error_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    details = error_payload.get("error", {}).get("details", [])
+    for detail in details:
+        violations = detail.get("violations")
+        if isinstance(violations, list):
+            return [violation for violation in violations if isinstance(violation, dict)]
+    return []
+
+
+def _is_daily_quota_error(error_payload: Dict[str, Any]) -> bool:
+    for violation in _quota_violations(error_payload):
+        quota_id = str(violation.get("quotaId", ""))
+        quota_metric = str(violation.get("quotaMetric", ""))
+        if "PerDay" in quota_id or "per_day" in quota_metric.lower():
+            return True
+    return False
+
+
+def _retry_delay_seconds(error_payload: Dict[str, Any]) -> int | None:
+    details = error_payload.get("error", {}).get("details", [])
+    for detail in details:
+        retry_delay = detail.get("retryDelay")
+        if not retry_delay:
+            continue
+        match = re.search(r"(\d+)", retry_delay)
+        if match:
+            return int(match.group(1))
+    message = error_payload.get("error", {}).get("message", "")
+    match = re.search(r"retry in\s+([0-9]+(?:\.[0-9]+)?)s", message, flags=re.IGNORECASE)
+    if match:
+        return max(1, round(float(match.group(1))))
+    return None
+
+
+def _raise_for_gemini_error(resp: requests.Response) -> None:
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+
+    status_code = resp.status_code or 502
+    error = payload.get("error", {})
+    message = error.get("message", "Upstream AI service error.")
+
+    if status_code == 429:
+        if _is_daily_quota_error(payload):
+            raise GeminiServiceError(
+                "AI daily quota reached for the configured Gemini key. Waiting a few seconds will not fix this; use a different key/plan or wait for the quota window to reset.",
+                status_code=429,
+            )
+        retry_seconds = _retry_delay_seconds(payload)
+        if retry_seconds is not None:
+            raise GeminiServiceError(
+                f"AI request quota reached. Please wait about {retry_seconds} seconds and try again.",
+                status_code=429,
+            )
+        raise GeminiServiceError("AI request quota reached. Please try again shortly.", status_code=429)
+
+    if status_code == 403:
+        raise GeminiServiceError("AI service rejected the API key. Please verify GEMINI_API_KEY.", status_code=502)
+
+    raise GeminiServiceError(message, status_code=502)
+
+
 def _get_api_key() -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
@@ -26,7 +96,8 @@ def _call_gemini_text(prompt_text: str, timeout: int = 30) -> str:
         ]
     }
     resp = requests.post(url, json=payload, timeout=timeout)
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        _raise_for_gemini_error(resp)
     data = resp.json()
     # Defensive extraction
     try:
@@ -124,6 +195,47 @@ def answer_question(company_name: str, sanitized_query: str, policy_tags: List[s
     return data
 
 
+def build_policy_answer_prompt(company_name: str, user_question: str, context_snippets: List[str]) -> str:
+    context_text = "\n\n".join(f"[Snippet {i+1}]\n{s}" for i, s in enumerate(context_snippets))
+    return (
+        "You are a helpful assistant answering questions about company documents.\n"
+        f"Company: {company_name or 'N/A'}\n\n"
+        "First decide whether the question is related to the supplied context.\n"
+        "A question is related when the context snippets contain enough relevant information to answer it.\n"
+        "Do not mark a question unrelated just because the relevant detail appears later in a long snippet.\n"
+        "Answer only from the supplied context.\n"
+        "If the context does not contain enough information, set related to false and answer to null.\n"
+        "Do NOT mention snippet labels such as [Snippet 1] in the answer text shown to the user.\n"
+        "Return STRICT JSON only with this exact schema:\n"
+        "{\n"
+        "  \"related\": boolean,\n"
+        "  \"reason\": string,\n"
+        "  \"sanitized_query\": string,\n"
+        "  \"policy_tags\": [string],\n"
+        "  \"answer\": string | null,\n"
+        "  \"follow_up_question\": string,\n"
+        "  \"citations\": [{\"snippet_num\": number, \"text\": string}]\n"
+        "}\n\n"
+        "CONTEXT:\n" + context_text + "\n\n"
+        f"QUESTION: {user_question}\n"
+    )
+
+
+def answer_with_policy(company_name: str, user_question: str, context_snippets: List[str]) -> Dict[str, Any]:
+    text = _call_gemini_text(build_policy_answer_prompt(company_name, user_question, context_snippets))
+    data = json_strict_loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("Combined answer response is not a JSON object")
+    data.setdefault("related", True)
+    data.setdefault("reason", "")
+    data.setdefault("sanitized_query", user_question)
+    data.setdefault("policy_tags", [])
+    data.setdefault("answer", None)
+    data.setdefault("follow_up_question", "")
+    data.setdefault("citations", [])
+    return data
+
+
 def embed_texts(texts: List[str]) -> List[List[float]]:
     """Return list of embedding vectors for input texts using Gemini Embeddings."""
     key = _get_api_key()
@@ -139,7 +251,7 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
         }
         resp = requests.post(url, json=payload, timeout=30)
         if resp.status_code >= 400:
-            resp.raise_for_status()
+            _raise_for_gemini_error(resp)
 
         data = resp.json()
         embedding = data.get("embedding", {}).get("values", [])

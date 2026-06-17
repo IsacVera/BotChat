@@ -117,6 +117,7 @@ CELERY_TIMEZONE = 'UTC'
 
 # CORS (development)
 CORS_ALLOW_ALL_ORIGINS = True
+X_FRAME_OPTIONS = 'ALLOWALL'
 
 # Logging (simple structured logs)
 LOGGING = {

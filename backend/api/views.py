@@ -13,7 +13,7 @@ from rest_framework import status
 
 from core.models import Document, Company, Chunk, ChatSession, ChatTurn, User
 from .serializer import DocumentSerializer, AskSerializer, CompanySerializer, UserSignupSerializer, UserLoginSerializer
-from .gemini import classify_question, answer_question, embed_texts
+from .gemini import GeminiServiceError, answer_with_policy, classify_question, embed_texts
 
 # Ingestion task
 try:
@@ -288,11 +288,19 @@ def chat_ask(request):
     # Use full chunk text (already sized appropriately during chunking ~800 words)
     snippets = [c['text'] for c in topk]
 
-    # Classifier
     try:
-        classifier = classify_question(company_name=company_name, user_question=question, context_snippets=snippets)
+        result = answer_with_policy(company_name=company_name, user_question=question, context_snippets=snippets)
+    except GeminiServiceError as exc:
+        return Response({'error': str(exc)}, status=exc.status_code)
     except Exception:
         return Response({'error': 'Upstream AI service error. Please try again later.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+    classifier = {
+        'related': result.get('related', True),
+        'reason': result.get('reason', ''),
+        'sanitized_query': result.get('sanitized_query', question),
+        'policy_tags': result.get('policy_tags', []),
+    }
 
     # Persist session/turn (create session lazily)
     if session_id:
@@ -319,16 +327,11 @@ def chat_ask(request):
             'debug': {'topk': _public_topk(topk)}
         }, status=200)
 
-    # Answerer
-    try:
-        answer = answer_question(
-            company_name=company_name,
-            sanitized_query=classifier.get('sanitized_query') or question,
-            policy_tags=classifier.get('policy_tags', []),
-            context_snippets=snippets
-        )
-    except Exception:
-        return Response({'error': 'Upstream AI service error. Please try again later.'}, status=status.HTTP_502_BAD_GATEWAY)
+    answer = {
+        'answer': result.get('answer') or '',
+        'follow_up_question': result.get('follow_up_question', ''),
+        'citations': result.get('citations', []),
+    }
 
     # Save answer
     turn.answer_json = answer
@@ -352,6 +355,8 @@ def chat_policy_check(request):
     try:
         classifier = classify_question(company_name=company_name, user_question=question)
         return Response({'classifier': classifier}, status=200)
+    except GeminiServiceError as exc:
+        return Response({'error': str(exc)}, status=exc.status_code)
     except Exception:
         return Response({'error': 'Upstream AI service error. Please verify GEMINI_API_KEY and network.'}, status=status.HTTP_502_BAD_GATEWAY)
 

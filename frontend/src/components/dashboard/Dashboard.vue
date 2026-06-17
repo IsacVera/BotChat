@@ -33,39 +33,66 @@
 
     <hr class="divider" />
 
-    <div class="chat-section">
-      <h2>💬 Ask the Chatbot</h2>
-      <form @submit.prevent="onAsk" class="form chat-form">
-        <label>
-          <input 
-            type="text" 
-            v-model="question" 
-            placeholder="Ask about your uploaded PDF..." 
-            class="question-input"
-            :disabled="!docStatus || docStatus.status !== 'ready'"
+    <div class="workspace">
+      <section class="pdf-panel">
+        <div class="panel-header">
+          <h2>PDF</h2>
+          <p v-if="docStatus?.page_count" class="panel-meta">{{ docStatus.page_count }} pages</p>
+        </div>
+
+        <div v-if="pdfUrl && docStatus?.status === 'ready'" class="pdf-frame-wrap">
+          <iframe
+            :src="pdfViewerUrl"
+            title="Document PDF preview"
+            class="pdf-frame"
           />
-        </label>
-        <button 
-          type="submit" 
-          :disabled="asking || !question || !docStatus || docStatus.status !== 'ready'"
-          class="ask-button"
-        >
-          {{ asking ? 'Asking…' : 'Ask' }}
-        </button>
-      </form>
+        </div>
 
-      <div v-if="askError" class="error error-box">{{ askError }}</div>
+        <p v-if="pdfUrl && docStatus?.status === 'ready'" class="pdf-link-row">
+          <a :href="pdfUrl" target="_blank" rel="noreferrer">Open PDF in a new tab</a>
+        </p>
 
-      <div v-if="answer" class="result">
-        <h3>Answer</h3>
-        <pre>{{ answer }}</pre>
-      </div>
+        <div v-else class="pdf-placeholder">
+          <p v-if="docStatus?.status === 'processing' || docStatus?.status === 'uploaded'">The PDF will appear here as soon as processing finishes.</p>
+          <p v-else-if="docStatus?.status === 'error'">The PDF preview is unavailable because document processing failed.</p>
+          <p v-else>Importing the PDF.</p>
+        </div>
+      </section>
+
+      <section class="chat-section">
+        <h2>💬 Ask the Chatbot</h2>
+        <form @submit.prevent="onAsk" class="form chat-form">
+          <label>
+            <input 
+              type="text" 
+              v-model="question" 
+              placeholder="Ask about your uploaded PDF..." 
+              class="question-input"
+              :disabled="!docStatus || docStatus.status !== 'ready'"
+            />
+          </label>
+          <button 
+            type="submit" 
+            :disabled="asking || !question || !docStatus || docStatus.status !== 'ready'"
+            class="ask-button"
+          >
+            {{ asking ? 'Asking…' : 'Ask' }}
+          </button>
+        </form>
+
+        <div v-if="askError" class="error error-box">{{ askError }}</div>
+
+        <div v-if="answer" class="result">
+          <h3>Answer</h3>
+          <pre>{{ answer }}</pre>
+        </div>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import axios from 'axios';
 
 const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
@@ -84,6 +111,20 @@ const uploadedDocId = ref<number | null>(null);
 const docStatus = ref<any>(null);
 const checkingStatus = ref(false);
 let statusCheckInterval: any = null;
+
+const pdfUrl = computed(() => {
+  if (!docStatus.value?.storage_path || docStatus.value.status !== 'ready') {
+    return '';
+  }
+  return `${apiBase}/media/${docStatus.value.storage_path}`;
+});
+
+const pdfViewerUrl = computed(() => {
+  if (!pdfUrl.value) {
+    return '';
+  }
+  return `${pdfUrl.value}#toolbar=1&navpanes=0&view=FitH`;
+});
 
 onMounted(() => {
   void loadConfiguredPdf();
@@ -180,7 +221,7 @@ async function onAsk() {
 
 <style scoped>
 .container {
-  max-width: 760px;
+  max-width: 1320px;
   margin: 40px auto;
   padding: 24px;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
@@ -241,6 +282,82 @@ button {
 
 .divider { margin: 32px 0; }
 
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-header h2,
+.chat-section h2 {
+  margin: 0;
+}
+
+.panel-meta {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.pdf-panel,
+.chat-section {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+}
+
+.pdf-frame-wrap {
+  border: 1px solid #d8dee8;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.pdf-frame {
+  display: block;
+  width: 100%;
+  height: 78vh;
+  min-height: 720px;
+  border: 0;
+}
+
+.pdf-link-row {
+  margin: 10px 0 0;
+  font-size: 14px;
+}
+
+.pdf-link-row a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.pdf-link-row a:hover {
+  text-decoration: underline;
+}
+
+.pdf-placeholder {
+  min-height: 420px;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #475569;
+  text-align: center;
+}
+
 .result pre {
   background: #f7f7f7;
   padding: 12px;
@@ -286,11 +403,8 @@ button {
 }
 
 .chat-section {
-  margin-top: 24px;
-}
-
-.chat-section h2 {
-  margin-bottom: 16px;
+  position: sticky;
+  top: 24px;
 }
 
 .chat-form {
@@ -371,5 +485,20 @@ button {
   cursor: pointer;
   color: #666;
   font-size: 12px;
+}
+
+@media (max-width: 960px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-section {
+    position: static;
+  }
+
+  .pdf-frame {
+    height: 65vh;
+    min-height: 520px;
+  }
 }
 </style>

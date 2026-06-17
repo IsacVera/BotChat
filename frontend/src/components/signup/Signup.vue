@@ -27,6 +27,17 @@
         </div>
 
         <div class="form-group">
+          <label for="companyName">Company Name</label>
+          <input
+            id="companyName"
+            v-model="formData.companyName"
+            type="text"
+            placeholder="Enter your company name"
+            required
+          />
+        </div>
+
+        <div class="form-group">
           <label for="password">Password</label>
           <input
             id="password"
@@ -71,7 +82,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import axios, { AxiosError } from 'axios';
+import axios from 'axios';
 
 const router = useRouter();
 const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
@@ -79,6 +90,7 @@ const apiBase = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:800
 const formData = ref({
   username: '',
   email: '',
+  companyName: '',
   password: '',
   confirmPassword: ''
 });
@@ -118,7 +130,7 @@ async function handleSignup() {
       router.push('/');
     }, 2000);
 
-  } catch (err: AxiosError) {
+  } catch (err: any) {
     console.error(err);
     if (err.response?.data?.error) {
       error.value = err.response.data.error;
