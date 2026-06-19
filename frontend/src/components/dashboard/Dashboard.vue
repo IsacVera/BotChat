@@ -1,8 +1,12 @@
 <template>
   <div class="container">
-    <h1>My heart</h1>
+    <div class="chat-banner">
+      <h1>Chatbot</h1>
+      <div>Ask the chatbot about the terms of service for Giovanni's Pizza Joint</div>
+      <!-- <img src="" alt=""> -->
+    </div>
     <div class="form">
-      <p class="fixed-company">Using company 1</p>
+      <!-- <p class="fixed-company">Using company 1</p> -->
 
       <p v-if="loading" class="uploading">⏳ Importing the server-side PDF...</p>
     </div>
@@ -113,10 +117,10 @@ const checkingStatus = ref(false);
 let statusCheckInterval: any = null;
 
 const pdfUrl = computed(() => {
-  if (!docStatus.value?.storage_path || docStatus.value.status !== 'ready') {
+  if (!docStatus.value?.filename || docStatus.value.status !== 'ready') {
     return '';
   }
-  return `${apiBase}/media/${docStatus.value.storage_path}`;
+  return `${apiBase}/media/source/${docStatus.value.filename}`;
 });
 
 const pdfViewerUrl = computed(() => {

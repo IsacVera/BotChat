@@ -80,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onUnmounted, ref } from 'vue';
 import axios from 'axios';
 import { apiBase } from '@/lib/apiBase';
 
@@ -98,7 +98,9 @@ const askError = ref('');
 const uploadedDocId = ref<number | null>(null);
 const docStatus = ref<any>(null);
 const checkingStatus = ref(false);
-let statusCheckInterval: any = null;
+let statusCheckTimeout: ReturnType<typeof setTimeout> | null = null;
+let statusCheckDelayMs = 5000;
+const MAX_STATUS_CHECK_DELAY_MS = 30000;
 
 async function onFileChange(e: Event) {
   const target = e.target as HTMLInputElement;
@@ -142,39 +144,63 @@ async function onFileChange(e: Event) {
 
 async function checkDocStatus() {
   if (!uploadedDocId.value) return;
+  if (checkingStatus.value) return;
   checkingStatus.value = true;
   try {
     const res = await axios.get(`${apiBase}/docs/${uploadedDocId.value}`);
     docStatus.value = res.data;
+    statusCheckDelayMs = 5000;
     
     // If status is ready or error, stop polling
     if (docStatus.value.status === 'ready' || docStatus.value.status === 'error') {
-      if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
-        statusCheckInterval = null;
-      }
+      stopStatusPolling();
+      return;
     }
+
+    scheduleNextStatusCheck();
   } catch (err: any) {
     console.error(err);
+    if (err.response?.status === 429) {
+      statusCheckDelayMs = Math.min(statusCheckDelayMs * 2, MAX_STATUS_CHECK_DELAY_MS);
+      message.value = 'Status checks are rate limited. Retrying with a longer delay...';
+      success.value = false;
+      scheduleNextStatusCheck();
+      return;
+    }
+
     message.value = 'Failed to check document status';
     success.value = false;
+    scheduleNextStatusCheck();
   } finally {
     checkingStatus.value = false;
   }
 }
 
-function startStatusPolling() {
-  // Clear any existing interval
-  if (statusCheckInterval) {
-    clearInterval(statusCheckInterval);
+function scheduleNextStatusCheck() {
+  if (statusCheckTimeout) {
+    clearTimeout(statusCheckTimeout);
   }
-  // Check immediately
-  checkDocStatus();
-  // Then poll every 2 seconds
-  statusCheckInterval = setInterval(() => {
-    checkDocStatus();
-  }, 2000);
+  statusCheckTimeout = setTimeout(() => {
+    void checkDocStatus();
+  }, statusCheckDelayMs);
 }
+
+function stopStatusPolling() {
+  if (statusCheckTimeout) {
+    clearTimeout(statusCheckTimeout);
+    statusCheckTimeout = null;
+  }
+}
+
+function startStatusPolling() {
+  stopStatusPolling();
+  statusCheckDelayMs = 5000;
+  void checkDocStatus();
+}
+
+onUnmounted(() => {
+  stopStatusPolling();
+});
 
 async function onAsk() {
   askError.value = '';
